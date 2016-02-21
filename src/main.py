@@ -1,5 +1,7 @@
 from ctypes import *
+import errno
 import sys
+import os
 import time
 
 libc = CDLL("libc.so.6")
@@ -133,51 +135,59 @@ def get_registers(pid):
 def set_registers(pid,data):
     return libc.ptrace(PTRACE_SETREGS, pid, 0, byref(data))
 
+def print_rip(data):
+    print('Rip: 0x%016x' % data.rip)
+
+def get_text(addr):
+    return libc.ptrace(PTRACE_PEEKTEXT,pid,addr, 0)
+
+def print_text(addr,data):
+    print('Addr 0x%016x : 0x%016x' % (addr.value,data.value))
+
+def set_text(pid,addr,data):
+    return libc.ptrace(PTRACE_POKETEXT,pid,addr,data)
+
+def print_errno():
+    print('Errno: %s: %s' % (errno.errorcode[get_errno_loc()[0]], os.strerror(get_errno_loc()[0])))
+
 def break_and_restart(addr):
     wait_status = c_int()
     data = registers()
 
-    initial_data = libc.ptrace(PTRACE_PEEKTEXT,pid,addr, 0)
-    print('Orig data 0x%08x: 0x%08x' % (addr,c_void_p(initial_data).value))
-    initial_regs = get_registers(pid)
-    print('ptrace getregs original rip: %s: 0x%08x' % (type(initial_regs),initial_regs.rip))
+    # Save initial state
+    initial_data = get_text(addr)
+    print_text(c_ulonglong(addr),c_ulonglong(initial_data))
 
+    # Set breakpoint
     trap_data = (initial_data & 0xFFFFFF00)|0xCC
-    libc.ptrace(PTRACE_POKETEXT,pid,addr, trap_data)
+    set_text(pid,c_ulonglong(addr),c_ulonglong(trap_data))
+    print_text(c_ulonglong(addr),c_ulonglong(get_text(c_ulonglong(addr))))
 
-    curr_data = libc.ptrace(PTRACE_PEEKTEXT,pid,addr, 0)
-    print('Changed data : 0x%08x' % c_void_p(curr_data).value)
-
+    # Continue to bp
     res = libc.ptrace(PTRACE_CONT,pid,0,0)
-    print('ptrace cont: %d' % res)
-
     libc.wait(byref(wait_status))
-    print('waitstatus : %d' % wait_status.value)
+
     if _wifstopped(wait_status):
         print('Breakpoint hit. Signal: %s' % (strsignal(_wstopsig(wait_status))))
     else:
         print('Error process failed to stop')
+        exit(1)
 
-
-    data = registers()
-
+    # Reset Instruction pointer
     data = get_registers(pid)
-    print('ptrace getregs: %s: 0x%08x' % (res,data.rip))
+    print_rip(data)
+    data.rip -= 1
+    res = set_registers(pid,data)
 
-    data.rip = c_ulong(addr)
-    res = set_registers(pid,initial_regs)
+    # Verify rip
+    print_rip(get_registers(pid))
+    # Reset Instruction
+    out = set_text(pid,c_ulonglong(addr),c_ulonglong(initial_data))
 
-    final_regs = get_registers(pid)
-    print('ptrace getregs final rip: : 0x%08x' % final_regs.rip)
+    if out != 0:
+        print_errno()
 
-    curr_data = libc.ptrace(PTRACE_PEEKTEXT,pid,addr, 0)
-    print('Before disable data : 0x%08x' % c_void_p(curr_data).value)
-
-    libc.ptrace(PTRACE_POKETEXT,pid,addr, initial_data)
-
-    curr_data = libc.ptrace(PTRACE_PEEKTEXT,pid,addr, 0)
-    print('Changed data : 0x%08x' % c_void_p(curr_data).value)
-
+    print_text(c_ulonglong(addr),c_ulonglong(get_text(c_void_p(addr))))
 
 
 def run_debugger(pid,addr):
@@ -187,8 +197,12 @@ def run_debugger(pid,addr):
 
     break_and_restart(addr)
 
-    res = libc.ptrace(PTRACE_DETACH,pid,0,0)
-    print('ptrace detach %d' % res)
+    out = libc.ptrace(PTRACE_DETACH,pid,0,0)
+
+    if out != 0:
+        print_errno()
+
+    print('ptrace detach %d' % out)
 
     libc.wait(byref(wait_status))
 
@@ -207,4 +221,4 @@ if __name__ == '__main__':
     if pid == 0: # Child
         run_process(path)
     else:
-        run_debugger(pid,0x00400710)
+        run_debugger(pid,0x0000000000400710)
