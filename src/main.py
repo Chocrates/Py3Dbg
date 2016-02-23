@@ -8,6 +8,7 @@ libc = CDLL("libc.so.6")
 get_errno_loc = libc.__errno_location
 get_errno_loc.restype = POINTER(c_int)
 
+
 PTRACE_TRACEME = 0
 PTRACE_PEEKTEXT = 1
 PTRACE_POKETEXT = 4
@@ -139,10 +140,14 @@ def print_rip(data):
     print('Rip: 0x%016x' % data.rip)
 
 def get_text(addr):
-    return libc.ptrace(PTRACE_PEEKTEXT,pid,addr, 0)
+    restype = libc.ptrace.restype
+    libc.ptrace.restype = c_void_p
+    out = libc.ptrace(PTRACE_PEEKTEXT,pid,addr, 0)
+    libc.ptrace.restype = restype
+    return out
 
 def print_text(addr,data):
-    print('Addr 0x%016x : 0x%016x' % (addr.value,data.value))
+    print('Addr 0x%016x : 0x%016x' % (addr.value,data))
 
 def set_text(pid,addr,data):
     return libc.ptrace(PTRACE_POKETEXT,pid,addr,data)
@@ -156,12 +161,12 @@ def break_and_restart(addr):
 
     # Save initial state
     initial_data = get_text(addr)
-    print_text(c_ulonglong(addr),c_ulonglong(initial_data))
+    print_text(c_ulonglong(addr),initial_data)
 
     # Set breakpoint
-    trap_data = (initial_data & 0xFFFFFF00)|0xCC
+    trap_data = (initial_data & 0xFFFFFFFFFFFFFF00)|0xCC
     set_text(pid,c_ulonglong(addr),c_ulonglong(trap_data))
-    print_text(c_ulonglong(addr),c_ulonglong(get_text(c_ulonglong(addr))))
+    print_text(c_ulonglong(addr),get_text(c_ulonglong(addr)))
 
     # Continue to bp
     res = libc.ptrace(PTRACE_CONT,pid,0,0)
@@ -182,12 +187,12 @@ def break_and_restart(addr):
     # Verify rip
     print_rip(get_registers(pid))
     # Reset Instruction
-    out = set_text(pid,c_ulonglong(addr),c_ulonglong(initial_data))
+    out = set_text(pid,c_ulonglong(addr),c_void_p(initial_data))
 
     if out != 0:
         print_errno()
 
-    print_text(c_ulonglong(addr),c_ulonglong(get_text(c_void_p(addr))))
+    print_text(c_ulonglong(addr),get_text(c_ulonglong(addr)))
 
 
 def run_debugger(pid,addr):
